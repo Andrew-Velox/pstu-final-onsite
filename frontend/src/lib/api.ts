@@ -465,4 +465,3 @@ export async function getAvailableBalance(
     `/users/${userId}/available-balance`
   );
 }
-}
