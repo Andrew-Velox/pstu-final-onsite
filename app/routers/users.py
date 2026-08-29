@@ -21,11 +21,75 @@ from app.schemas import (
     BalanceResponse,
     TransactionItem,
     TransactionListResponse,
+    UserCreate,
+    UserResponse,
+)
+from app.services import (
+    register_user,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+
+@router.get("")
+def list_users(db: Session = Depends(get_db)):
+    """Return all users (for the frontend user-switcher)."""
+    users = db.query(User).order_by(User.name).all()
+    return [
+        {"id": str(u.id), "name": u.name, "email": u.email}
+        for u in users
+    ]
+
+
+# ─── POST /users — registration with auto-funding ────────────────────────────
+
+@router.post("", response_model=UserResponse, status_code=201)
+def create_user(
+    body: UserCreate,
+    db: Session = Depends(get_db),
+):
+    """
+    Register a new user and credit them with the starting balance from
+    the system treasury.
+
+    All of the following happen in a single DB transaction:
+      1. Insert the new ``users`` row.
+      2. Insert a ``transfers`` row (sender=treasury, receiver=new user).
+      3. Insert the matching pair of ``ledger_entries`` (debit treasury,
+         credit new user) via the same ``execute_transfer`` path used by
+         every other transfer.
+
+    The funding transfer's idempotency key is ``seed-{user_id}``, so a
+    retried registration can never double-fund the user.
+    """
+    try:
+        new_user, starting_balance = register_user(
+            db=db,
+            name=body.name,
+            email=body.email,
+        )
+        db.commit()
+        db.refresh(new_user)
+
+        return UserResponse(
+            id=new_user.id,
+            name=new_user.name,
+            email=new_user.email,
+            balance=starting_balance,
+            created_at=new_user.created_at,
+        )
+
+    except ValueError as exc:
+        db.rollback()
+        logger.warning("Registration rejected: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    except Exception:
+        db.rollback()
+        logger.exception("Unexpected error during user registration")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 class TypeFilter(str, enum.Enum):

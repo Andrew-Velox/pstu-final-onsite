@@ -8,6 +8,49 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
+# ─── User ─────────────────────────────────────────────────────────────────────
+
+class UserCreate(BaseModel):
+    """POST /users request body — registration."""
+    name: str = Field(..., min_length=1, max_length=255)
+    email: str = Field(
+        ...,
+        min_length=3,
+        max_length=255,
+        description="User's email address. Must contain an '@'.",
+    )
+
+
+class UserResponse(BaseModel):
+    """Response body for user creation / lookup."""
+    id: UUID
+    name: str
+    email: str
+    balance: Decimal = Field(
+        description="User's current ledger-derived balance",
+    )
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ─── System health ────────────────────────────────────────────────────────────
+
+class HealthCheckResponse(BaseModel):
+    """GET /system/health-check response.
+
+    The ledger is correct iff ``net_balance == 0`` — every credit in the
+    system is exactly offset by a debit, so the absolute sum of all
+    ledger amounts must come back to zero.
+    """
+    total_credits: Decimal
+    total_debits: Decimal
+    net_balance: Decimal
+    ledger_is_balanced: bool
+    user_count: int
+    transfer_count: int
+
+
 # ─── Transfer ─────────────────────────────────────────────────────────────────
 
 class TransferRequest(BaseModel):

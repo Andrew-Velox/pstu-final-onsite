@@ -28,6 +28,7 @@ ENV/
 *~
 .DS_Store
 Thumbs.db
+.puku
 
 # ── Alembic ──────────────────────────────────────────────────────────────────
 # Keep migration files tracked, but ignore any local stamp files
