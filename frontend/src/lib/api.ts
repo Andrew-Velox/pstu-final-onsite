@@ -161,3 +161,58 @@ export async function declineRequest(
     body: JSON.stringify({ user_id: userId }),
   });
 }
+
+// ─── User Registration ──────────────────────────────────────────────────────
+
+export async function createUser(input: {
+  name: string;
+  email: string;
+}): Promise<User> {
+  return apiFetch<User>("/users", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+// ─── x402 hardening ─────────────────────────────────────────────────────────
+
+export interface X402Info {
+  version: number;
+  capabilities: string[];
+  rateLimit: {
+    burst: number;
+    refillPerSecond: number;
+    activeBuckets: number;
+  };
+}
+
+export interface X402Bucket {
+  key: string;
+  tokensRemaining: number;
+}
+
+export interface X402Usage {
+  buckets: X402Bucket[];
+}
+
+export interface X402SignResponse {
+  timestamp: string;
+  signature: string;
+  algorithm: string;
+  bodyLength: number;
+}
+
+export async function x402Info(): Promise<X402Info> {
+  return apiFetch<X402Info>("/x402/info");
+}
+
+export async function x402Usage(): Promise<X402Usage> {
+  return apiFetch<X402Usage>("/x402/usage");
+}
+
+export async function x402Sign(body: object): Promise<X402SignResponse> {
+  return apiFetch<X402SignResponse>("/x402/sign", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}

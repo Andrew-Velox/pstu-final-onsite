@@ -11,7 +11,7 @@ const mainLinks = [
 ];
 
 const footerLinks = [
-  { href: "#", icon: "verified_user", label: "Safety Center" },
+  { href: "/admin/x402", icon: "shield_lock", label: "x402 Admin" },
   { href: "#", icon: "settings", label: "Settings" },
 ];
 
