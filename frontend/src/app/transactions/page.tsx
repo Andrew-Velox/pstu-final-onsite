@@ -216,7 +216,7 @@ export default function TransactionsPage() {
             {items.map((txn) => (
               <div
                 key={txn.transfer_id}
-                className="flex items-center justify-between p-[16px] border-b border-outline-variant last:border-b-0 hover:bg-surface-container-low transition-colors"
+                className="flex items-center justify-between p-[16px] border-b border-outline-variant last:border-b-0 hover:bg-surface-container-low transition-colors group"
               >
                 <div className="flex items-center gap-[16px]">
                   <div
@@ -239,27 +239,38 @@ export default function TransactionsPage() {
                     </p>
                   </div>
                 </div>
-                <div className="text-right">
-                  <div
-                    className={`text-data-md font-medium ${
-                      txn.direction === "received"
-                        ? "text-on-tertiary-container"
-                        : "text-primary"
-                    }`}
-                  >
-                    {txn.direction === "received" ? "+" : "-"}৳{formatAmount(txn.amount)}
+                <div className="flex items-center gap-[12px]">
+                  <div className="text-right">
+                    <div
+                      className={`text-data-md font-medium ${
+                        txn.direction === "received"
+                          ? "text-on-tertiary-container"
+                          : "text-primary"
+                      }`}
+                    >
+                      {txn.direction === "received" ? "+" : "-"}৳{formatAmount(txn.amount)}
+                    </div>
+                    <div
+                      className={`inline-flex items-center px-2 py-0.5 rounded-full mt-1 ${
+                        txn.direction === "received"
+                          ? "bg-on-tertiary-container/10 text-on-tertiary-container"
+                          : "bg-outline/10 text-on-surface-variant"
+                      }`}
+                    >
+                      <span className="text-[10px] uppercase tracking-wider font-medium">
+                        Settled
+                      </span>
+                    </div>
                   </div>
-                  <div
-                    className={`inline-flex items-center px-2 py-0.5 rounded-full mt-1 ${
-                      txn.direction === "received"
-                        ? "bg-on-tertiary-container/10 text-on-tertiary-container"
-                        : "bg-outline/10 text-on-surface-variant"
-                    }`}
+                  <Link
+                    href={`/explain/${txn.transfer_id}`}
+                    className="ml-[8px] inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-surface-container text-secondary text-label-md opacity-0 group-hover:opacity-100 transition-opacity hover:bg-secondary-container/20"
                   >
-                    <span className="text-[10px] uppercase tracking-wider font-medium">
-                      Settled
+                    <span className="material-symbols-outlined text-[16px]">
+                      visibility
                     </span>
-                  </div>
+                    Explain
+                  </Link>
                 </div>
               </div>
             ))}

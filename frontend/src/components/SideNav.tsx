@@ -11,6 +11,7 @@ const mainLinks = [
 ];
 
 const footerLinks = [
+  { href: "/recovery", icon: "build_circle", label: "Recovery" },
   { href: "/admin/x402", icon: "shield_lock", label: "x402 Admin" },
   { href: "#", icon: "settings", label: "Settings" },
 ];
@@ -60,16 +61,24 @@ export default function SideNav() {
 
       {/* Footer links */}
       <nav className="flex flex-col gap-[4px] mt-auto pt-[16px] border-t border-outline-variant">
-        {footerLinks.map((link) => (
-          <Link
-            key={link.label}
-            href={link.href}
-            className="flex items-center gap-[16px] text-on-surface-variant hover:text-secondary px-4 py-3 hover:bg-surface-container rounded-xl transition-all duration-200 hover:translate-x-1"
-          >
-            <span className="material-symbols-outlined">{link.icon}</span>
-            <span className="text-label-md">{link.label}</span>
-          </Link>
-        ))}
+        {footerLinks.map((link) => {
+          const isActive =
+            pathname === link.href || pathname.startsWith(`${link.href}/`);
+          return (
+            <Link
+              key={link.label}
+              href={link.href}
+              className={`flex items-center gap-[16px] px-4 py-3 rounded-xl transition-all duration-200 hover:translate-x-1 ${
+                isActive
+                  ? "bg-secondary-container/10 text-secondary font-bold"
+                  : "text-on-surface-variant hover:text-secondary hover:bg-surface-container"
+              }`}
+            >
+              <span className="material-symbols-outlined">{link.icon}</span>
+              <span className="text-label-md">{link.label}</span>
+            </Link>
+          );
+        })}
       </nav>
     </aside>
   );

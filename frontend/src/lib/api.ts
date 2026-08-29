@@ -216,3 +216,84 @@ export async function x402Sign(body: object): Promise<X402SignResponse> {
     body: JSON.stringify(body),
   });
 }
+
+// ─── Transaction Explainability Engine ──────────────────────────────────────
+
+export interface LedgerEntryExplain {
+  id: string;
+  user_id: string;
+  user_name: string;
+  entry_type: "debit" | "credit";
+  amount: string;
+  created_at: string;
+  prev_hash: string;
+  entry_hash: string;
+}
+
+export interface TransferExplain {
+  transfer_id: string;
+  sender_id: string;
+  sender_name: string;
+  receiver_id: string;
+  receiver_name: string;
+  amount: string;
+  status: string;
+  idempotency_key: string;
+  created_at: string;
+  sender_balance_before: string;
+  sender_balance_after: string;
+  receiver_balance_before: string;
+  receiver_balance_after: string;
+  entries: LedgerEntryExplain[];
+  narrative: string;
+  chain_position: number;
+}
+
+export async function explainTransfer(
+  transferId: string
+): Promise<TransferExplain> {
+  return apiFetch<TransferExplain>(`/transfers/${transferId}/explain`);
+}
+
+// ─── Money Movement Recovery Center ─────────────────────────────────────────
+
+export interface RecoverySummary {
+  total_transfers: number;
+  completed: number;
+  failed: number;
+  replayable: number;
+  pending_requests: number;
+}
+
+export interface ReplayImpact {
+  sender_balance_after: string;
+  receiver_balance_after: string;
+  sender_has_sufficient_funds: boolean;
+  note: string;
+}
+
+export interface ReplayResponse {
+  replayed: boolean;
+  transfer_id: string;
+  note: string;
+  sender_balance: string | null;
+}
+
+export async function getRecoverySummary(): Promise<RecoverySummary> {
+  return apiFetch<RecoverySummary>("/recovery/summary");
+}
+
+export async function getReplayImpact(
+  transferId: string
+): Promise<ReplayImpact> {
+  return apiFetch<ReplayImpact>(`/recovery/replay/${transferId}/impact`);
+}
+
+export async function replayTransfer(
+  transferId: string
+): Promise<ReplayResponse> {
+  return apiFetch<ReplayResponse>("/recovery/replay", {
+    method: "POST",
+    body: JSON.stringify({ transfer_id: transferId }),
+  });
+}

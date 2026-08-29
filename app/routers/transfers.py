@@ -7,8 +7,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.schemas import TransferRequest, TransferResponse
-from app.services import execute_transfer, get_existing_transfer, _compute_balance
+from app.schemas import TransferExplainResponse, TransferRequest, TransferResponse
+from app.services import (
+    explain_transfer,
+    execute_transfer,
+    get_existing_transfer,
+    _compute_balance,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,3 +83,25 @@ def create_transfer(
         db.rollback()
         logger.exception("Unexpected error during transfer")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/{transfer_id}/explain", response_model=TransferExplainResponse)
+def explain(
+    transfer_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Transaction Explainability Engine.
+
+    Returns a complete human-readable explanation of a transfer:
+    who paid whom, how much, the resulting balance changes, both ledger
+    entries with their hash-chain links, and a narrative paragraph.
+
+    Designed for the "Explain" button on the Transactions page — a judge
+    clicks any past transfer and sees exactly what the ledger recorded.
+    """
+    try:
+        report = explain_transfer(db, transfer_id)  # type: ignore[arg-type]
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return TransferExplainResponse(**report)

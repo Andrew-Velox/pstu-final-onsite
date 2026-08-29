@@ -220,6 +220,12 @@ class LedgerEntry(Base):
         server_default=func.now(),
         nullable=False,
     )
+    # ── Tamper-evident hash chain ────────────────────────────────────────
+    # Each entry stores the SHA-256 of the *previous* ledger entry plus its
+    # own canonical content.  This is a mini-blockchain inside the table:
+    # any tampering with a prior row breaks the chain at every later row.
+    prev_hash = Column(String(64), nullable=True, index=True)
+    entry_hash = Column(String(64), nullable=False, unique=True, index=True)
 
     # ── relationships ─────────────────────────────────────────────────────
     user = relationship("User", back_populates="ledger_entries")
@@ -228,6 +234,7 @@ class LedgerEntry(Base):
     # ── extra indexes ─────────────────────────────────────────────────────
     __table_args__ = (
         Index("ix_ledger_entries_user_created", "user_id", "created_at"),
+        Index("ix_ledger_entries_chain", "created_at", "entry_hash"),
     )
 
     def __repr__(self) -> str:

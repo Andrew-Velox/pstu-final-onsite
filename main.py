@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # Import models so they are registered with Base.metadata
 from app import models  # noqa: F401
 from app.database import SessionLocal
+from app.routers.recovery import router as recovery_router
 from app.routers.requests import router as requests_router
 from app.routers.system import router as system_router
 from app.routers.transfers import router as transfers_router
@@ -63,6 +64,7 @@ app.include_router(requests_router)
 app.include_router(users_router)
 app.include_router(system_router)
 app.include_router(x402_router)
+app.include_router(recovery_router)
 
 
 @app.get("/health")

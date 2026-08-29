@@ -40,10 +40,12 @@ Most fintech demos treat money like a spreadsheet cell — `balance = balance - 
 |---|---|---|
 | 🧾 **Double-entry ledger** | "৳ 1,200 — Available balance" | Balance is `Σ credits − Σ debits` over the entire journal. No `balance` column exists. |
 | 🔁 **Peer transfers** | 3-step send flow with atomic confirmation | `SELECT … FOR UPDATE` on both users in *ascending UUID order*, single transaction, 2 ledger rows. |
+| � **Transaction Explainability Engine** | `/explain/[id]` page: sender → receiver balances, plain-English narrative, two ledger entries, and a visual hash-chain of the row's `prev_hash` → `entry_hash` linkage. | `GET /transfers/{id}/explain` reconstructs the entire story of a transfer from the ledger. |
+| 🛟 **Money Movement Recovery Center** | `/recovery` page: counter tiles for total / completed / failed / replayable / pending, plus a "Replay" button on each affected row that dry-runs the impact *before* committing. | `GET /recovery/summary`, `GET /recovery/replay/{id}/impact`, and `POST /recovery/replay` let ops re-execute failed transfers using the cached `idempotency_key` — no double-spend possible. |
 | 🛡️ **HMAC-SHA256 request signing** | Every API call carries `X-Signature` + `X-Timestamp` | Server rejects unsigned/expired/stale requests beyond ±300s clock skew. Replay-resistant. |
 | ⏱️ **Live token-bucket rate limit** | A real-time dashboard of remaining tokens per client | 60-burst / 1-RPS bucket; visualized live with 3-second polling and a stress-test playground. |
 | 🏦 **System treasury** | New user signs up → instantly funded with ৳ 100,000 | A fixed-UUID system account is the *only* source of new money; can go negative, everything else cannot. |
-| � **Money requests** | "Approve" / "Decline" buttons to settle a pending ask | Two-phase commit: request → atomic transfer on approval. |
+| 💬 **Money requests** | "Approve" / "Decline" buttons to settle a pending ask | Two-phase commit: request → atomic transfer on approval. |
 | 📊 **System health check** | "Consistent · No duplicates · Concurrency-safe" | Three live invariants that prove the ledger hasn't drifted. |
 
 ---
@@ -51,12 +53,14 @@ Most fintech demos treat money like a spreadsheet cell — `balance = balance - 
 ## 🏆 Why This Wins the Hackathon
 
 1. **It's actually correct.** Most demos skip the ledger. We built one — with locking, ordering, and a treasury pattern that mirrors real banking systems.
-2. **It's secure by default, not as an afterthought.** HMAC signing and rate limiting are first-class dependencies on every write route, not bolted on.
-3. **It's demoable.** The x402 admin panel turns invisible infra (rate limit buckets, request signatures) into a *live, observable* dashboard — judges see it working in real time.
-4. **It ships the UI/UX bar.** Material 3 design tokens, three-step send flow, gradient avatars, atomic-transaction trust banner. No `lorem ipsum`.
-5. **It has a stress test.** `tests/test_concurrent_transfers.py` proves the deadlock-ordering works under load.
+2. **It's explainable end-to-end.** Every transfer has an `/explain/[id]` page that shows the two ledger entries, the sender/receiver balance deltas, the plain-English narrative, and a visual hash chain — auditors and judges see *why* the math reconciles.
+3. **It survives failure.** The Recovery Center surfaces failed/replayable transfers and replays them via the cached `idempotency_key` after a dry-run impact check. No double-spend, no manual SQL.
+4. **It's secure by default, not as an afterthought.** HMAC signing and rate limiting are first-class dependencies on every write route, not bolted on.
+5. **It's demoable.** The x402 admin panel turns invisible infra (rate limit buckets, request signatures) into a *live, observable* dashboard — judges see it working in real time.
+6. **It ships the UI/UX bar.** Material 3 design tokens, three-step send flow, gradient avatars, atomic-transaction trust banner. No `lorem ipsum`.
+7. **It has a stress test.** `tests/test_concurrent_transfers.py` proves the deadlock-ordering works under load.
 
-> **Tagline judges remember:** *"No balance column exists — only journal entries. The truth is in the math."*
+> **Tagline judges remember:** *"No balance column exists — only journal entries. The truth is in the math, and we can prove it."*
 
 ---
 
@@ -223,10 +227,14 @@ open http://localhost:8000/docs
 | `GET`  | `/users/{id}/balance` | Recomputed balance from the ledger |
 | `GET`  | `/users/{id}/transactions` | Paginated transaction history |
 | `POST` | `/transfers` | Atomic peer transfer (idempotent) |
+| `GET`  | `/transfers/{id}/explain` | 🆕 **Killer Feature 1** — full Explainability report (narrative + 2 entries + hash chain + balance deltas) |
 | `POST` | `/requests` | Create a money request |
 | `GET`  | `/requests` | List incoming + outgoing requests |
 | `POST` | `/requests/{id}/approve` | Approve & settle as a transfer |
 | `POST` | `/requests/{id}/decline` | Decline a pending request |
+| `GET`  | `/recovery/summary` | 🆕 **Killer Feature 2** — system health: completed / failed / replayable / pending |
+| `GET`  | `/recovery/replay/{id}/impact` | Simulate a replay: would balances land correctly? Does the sender still have funds? |
+| `POST` | `/recovery/replay` | Replay any failed/replayable transfer using the cached `idempotency_key` |
 | `GET`  | `/system/health-check` | Ledger invariant report |
 | `GET`  | `/x402/info` | x402 capabilities (signing + rate limit config) |
 | `POST` | `/x402/sign` | Mint an HMAC-SHA256 signature for a payload |
@@ -315,10 +323,11 @@ pstu-final-onsite/
 │   ├── x402_signing.py            # HMAC-SHA256 request signing
 │   ├── x402_rate_limit.py         # Token-bucket rate limiter
 │   └── routers/
-│       ├── transfers.py           # POST /transfers (atomic)
+│       ├── transfers.py           # POST /transfers (atomic), GET /transfers/{id}/explain
 │       ├── requests.py            # /requests (create/approve/decline)
 │       ├── users.py               # /users (register, balance, history)
 │       ├── system.py              # /system/health-check
+│       ├── recovery.py            # /recovery (summary | impact | replay)
 │       └── x402.py                # /x402/sign | /info | /usage
 ├── frontend/                      # Next.js 15 app
 │   ├── src/
@@ -326,7 +335,9 @@ pstu-final-onsite/
 │   │   │   ├── page.tsx           # Dashboard
 │   │   │   ├── send/              # 3-step send money flow
 │   │   │   ├── request/           # Money request flow
-│   │   │   ├── transactions/      # History + filters + pagination
+│   │   │   ├── transactions/      # History + filters + Explain links
+│   │   │   ├── explain/[id]/      # 🆕 Transaction Explainability Engine
+│   │   │   ├── recovery/          # 🆕 Money Movement Recovery Center
 │   │   │   └── admin/x402/        # Live token-bucket dashboard
 │   │   ├── components/            # TopNav, SideNav
 │   │   └── lib/                   # api.ts, UserContext.tsx
