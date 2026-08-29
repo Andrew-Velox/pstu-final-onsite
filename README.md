@@ -47,6 +47,7 @@ Most fintech demos treat money like a spreadsheet cell — `balance = balance - 
 | 🏦 **System treasury** | New user signs up → instantly funded with ৳ 100,000 | A fixed-UUID system account is the *only* source of new money; can go negative, everything else cannot. |
 | 💬 **Money requests** | "Approve" / "Decline" buttons to settle a pending ask | Two-phase commit: request → atomic transfer on approval. |
 | 📊 **System health check** | "Consistent · No duplicates · Concurrency-safe" | Three live invariants that prove the ledger hasn't drifted. |
+| ⚖️ **Money Movement Protection (Dispute Center)** | `/disputes` page: file a claim against a transfer you sent in error (screenshot + claim + narrative), watch the live hold countdown, respond or force-resolve. `/disputes/[id]` shows the full audit trail and timeline. | `POST /disputes`, `GET /disputes`, `GET /disputes/{id}`, `POST /disputes/{id}/respond`, `POST /disputes/{id}/admin-resolve`, `GET /disputes/notifications`, `GET /users/{id}/available-balance`. Auto-refund via ledger clawback after 15 days. |
 
 ---
 
@@ -236,6 +237,15 @@ open http://localhost:8000/docs
 | `GET`  | `/recovery/replay/{id}/impact` | Simulate a replay: would balances land correctly? Does the sender still have funds? |
 | `POST` | `/recovery/replay` | Replay any failed/replayable transfer using the cached `idempotency_key` |
 | `GET`  | `/system/health-check` | Ledger invariant report |
+| `POST` | `/disputes` | ⚖️ **Killer Feature 3** — file a Money Movement Protection dispute (screenshot, claimed vs. requested, narrative) |
+| `GET`  | `/disputes?user_id=…` | List disputes where the user is complainant or respondent |
+| `GET`  | `/disputes/{id}` | Full dispute detail: claim, screenshot, parties, timeline, hold countdown |
+| `POST` | `/disputes/{id}/respond` | Receiver submits a response (optionally accepts the refund for instant clawback) |
+| `POST` | `/disputes/{id}/admin-resolve` | Force refund the sender or release the receiver |
+| `GET`  | `/disputes/notifications?user_id=…` | Per-user notification feed (calls, dispute events) |
+| `POST` | `/disputes/notifications/read-all?user_id=…` | Mark every notification read |
+| `POST` | `/disputes/sweep-expired` | Cron-style trigger for the auto-refund sweep |
+| `GET`  | `/users/{id}/available-balance` | `{ balance, held, available }` — held = sum of active dispute holds |
 | `GET`  | `/x402/info` | x402 capabilities (signing + rate limit config) |
 | `POST` | `/x402/sign` | Mint an HMAC-SHA256 signature for a payload |
 | `GET`  | `/x402/usage` | Current token-bucket state for all clients |

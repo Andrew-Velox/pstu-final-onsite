@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
@@ -67,12 +67,16 @@ export default function RecoveryPage() {
       setUsers(u);
 
       // Build a flat list of recent transfers across all users so the
-      // operator can pick one and replay it.
+      // operator can pick one and replay it. Fetch all user transactions
+      // in parallel instead of sequentially awaiting one user at a time.
+      const userIds = u.slice(0, 6).map((user) => user.id);
+      const perUserResults = await Promise.allSettled(
+        userIds.map((id) => getTransactions(id, 8))
+      );
       const recent: ReplayRow[] = [];
-      for (const user of u.slice(0, 6)) {
-        try {
-          const txs = await getTransactions(user.id, 8);
-          for (const t of txs.items) {
+      perUserResults.forEach((result, idx) => {
+        if (result.status === "fulfilled") {
+          for (const t of result.value.items) {
             recent.push({
               transfer_id: t.transfer_id,
               amount: t.amount,
@@ -82,10 +86,13 @@ export default function RecoveryPage() {
               timestamp: t.timestamp,
             });
           }
-        } catch {
-          // ignore — best effort
+        } else {
+          console.warn(
+            `[recovery] failed to load transactions for user ${userIds[idx]}:`,
+            result.reason
+          );
         }
-      }
+      });
       // Sort by timestamp desc
       recent.sort(
         (a, b) =>
@@ -238,7 +245,8 @@ export default function RecoveryPage() {
                   <li key={r.transfer_id}>
                     <button
                       onClick={() => selectTransfer(r.transfer_id)}
-                      className={`w-full text-left flex items-center justify-between gap-[16px] p-[12px] rounded-xl border transition-all ${
+                      disabled={impactLoading && isSelected}
+                      className={`w-full text-left flex items-center justify-between gap-[16px] p-[12px] rounded-xl border transition-all disabled:opacity-60 disabled:cursor-not-allowed ${
                         isSelected
                           ? "bg-secondary-container/20 border-secondary"
                           : "bg-surface-container border-transparent hover:border-outline-variant"
@@ -264,7 +272,7 @@ export default function RecoveryPage() {
                             {r.counterparty_name}
                           </p>
                           <p className="text-body-sm text-on-surface-variant">
-                            {timeAgo(r.timestamp)} · chain #?
+                            {timeAgo(r.timestamp)}
                           </p>
                         </div>
                       </div>

@@ -51,6 +51,25 @@ class MoneyRequestStatus(str, enum.Enum):
     declined = "declined"
 
 
+class DisputeStatus(str, enum.Enum):
+    """Lifecycle of a sender-side dispute against a transfer."""
+    filed = "filed"                        # Just opened; hold is now active.
+    under_review = "under_review"          # Receiver responded; awaiting adjudication.
+    resolved_for_sender = "resolved_for_sender"  # Money refunded to sender.
+    resolved_for_receiver = "resolved_for_receiver"  # Hold released; receiver keeps it.
+    auto_refunded = "auto_refunded"        # 15-day timer expired; auto-clawback.
+    rejected = "rejected"                  # 3-digit rule or window violated.
+
+
+class NotificationKind(str, enum.Enum):
+    """Kind of in-app notification."""
+    dispute_filed = "dispute_filed"
+    dispute_responded = "dispute_responded"
+    dispute_resolved = "dispute_resolved"
+    dispute_expired = "dispute_expired"
+    call_outbound = "call_outbound"
+
+
 # ─── User ─────────────────────────────────────────────────────────────────────
 
 class User(Base):
@@ -302,4 +321,162 @@ class MoneyRequest(Base):
             f"<MoneyRequest id={self.id!s} "
             f"requester={self.requester_id!s} → target={self.target_id!s} "
             f"amount={self.amount} status={self.status.value}>"
+        )
+
+
+# ─── Dispute (Money Movement Protection) ──────────────────────────────────────
+
+class Dispute(Base):
+    """
+    A sender-side dispute on a single transfer.
+
+    Lifecycle:
+
+        filed ──► under_review ──► resolved_for_sender | resolved_for_receiver
+           │              │
+           │              └─► auto_refunded    (15-day hold timer elapsed)
+           └─► rejected (3-digit rule failed, outside window, etc.)
+
+    When the dispute is ``filed`` (and not rejected), the receiver's
+    available balance is frozen for ``hold_expires_at``.  If the receiver
+    responds within the window the dispute moves to ``under_review``;
+    otherwise the system auto-clawbacks via double-entry reversal entries
+    and marks the dispute ``auto_refunded``.
+    """
+
+    __tablename__ = "disputes"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=_uuid.uuid4,
+        nullable=False,
+    )
+    transfer_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("transfers.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    complainant_id = Column(  # the sender filing the dispute
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    respondent_id = Column(  # the receiver the dispute is filed against
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    screenshot_url = Column(String(1024), nullable=False)
+    claimed_amount = Column(Numeric(precision=14, scale=2), nullable=False)
+    requested_amount = Column(Numeric(precision=14, scale=2), nullable=False)
+    narrative = Column(String(2000), nullable=True)
+
+    status = Column(
+        Enum(DisputeStatus, name="dispute_status", create_constraint=True),
+        default=DisputeStatus.filed,
+        nullable=False,
+        index=True,
+    )
+    hold_expires_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        index=True,
+        doc="15 days from filing. Hold is active until this point.",
+    )
+    receiver_response = Column(String(2000), nullable=True)
+    resolution_note = Column(String(2000), nullable=True)
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+
+    # ── relationships ─────────────────────────────────────────────────────
+    transfer = relationship("Transfer")
+    complainant = relationship(
+        "User",
+        foreign_keys=[complainant_id],
+    )
+    respondent = relationship(
+        "User",
+        foreign_keys=[respondent_id],
+    )
+
+    __table_args__ = (
+        Index("ix_disputes_status_expires", "status", "hold_expires_at"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<Dispute id={self.id!s} transfer={self.transfer_id!s} "
+            f"status={self.status.value} expires={self.hold_expires_at}>"
+        )
+
+
+# ─── Notification ─────────────────────────────────────────────────────────────
+
+class Notification(Base):
+    """
+    In-app notification (and a simulated outbound-call log).
+
+    Every state transition on a Dispute creates one row per recipient so
+    that both sides see a unified timeline.  ``kind=call_outbound`` rows
+    record the simulated voice call that the system places to the
+    receiver when a hold starts (and to the sender when the hold expires).
+    """
+
+    __tablename__ = "notifications"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=_uuid.uuid4,
+        nullable=False,
+    )
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    kind = Column(
+        Enum(NotificationKind, name="notification_kind", create_constraint=True),
+        nullable=False,
+    )
+    title = Column(String(255), nullable=False)
+    body = Column(String(2000), nullable=False)
+    dispute_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("disputes.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    is_read = Column(
+        # Use sa.Boolean to avoid importing Boolean at module top
+        # (keeps diff against earlier files minimal).
+        __import__("sqlalchemy").Boolean,
+        default=False,
+        nullable=False,
+    )
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        Index("ix_notifications_user_unread", "user_id", "is_read", "created_at"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<Notification id={self.id!s} user={self.user_id!s} "
+            f"kind={self.kind.value} read={self.is_read}>"
         )

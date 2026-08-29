@@ -6,6 +6,8 @@ import { useUser } from "@/lib/UserContext";
 import {
   getBalance,
   getTransactions,
+  getAvailableBalance,
+  type AvailableBalanceResponse,
   type BalanceResponse,
   type TransactionItem,
 } from "@/lib/api";
@@ -32,6 +34,9 @@ function timeAgo(dateStr: string): string {
 export default function OverviewPage() {
   const { activeUser, loading: userLoading } = useUser();
   const [balance, setBalance] = useState<BalanceResponse | null>(null);
+  const [available, setAvailable] = useState<AvailableBalanceResponse | null>(
+    null
+  );
   const [transactions, setTransactions] = useState<TransactionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -41,12 +46,14 @@ export default function OverviewPage() {
     setLoading(true);
     setError(null);
     try {
-      const [bal, txns] = await Promise.all([
+      const [bal, txns, avail] = await Promise.all([
         getBalance(activeUser.id),
         getTransactions(activeUser.id, 5),
+        getAvailableBalance(activeUser.id).catch(() => null),
       ]);
       setBalance(bal);
       setTransactions(txns.items);
+      setAvailable(avail);
     } catch (e) {
       setError(
         e instanceof Error ? e.message : "Failed to connect to backend"
@@ -157,6 +164,15 @@ export default function OverviewPage() {
                     ৳{formatAmount(balance?.balance || 0)}
                   </div>
                 )}
+                {available && Number(available.held) > 0 && (
+                  <div className="mt-2 inline-flex items-center gap-2 text-body-sm px-3 py-1 rounded-full bg-secondary-container text-secondary">
+                    <span className="material-symbols-outlined text-[16px]">
+                      lock
+                    </span>
+                    ৳{formatAmount(available.held)} held in disputes · available ৳
+                    {formatAmount(available.available)}
+                  </div>
+                )}
               </div>
               {/* In/Out Summary */}
               <div className="flex gap-[24px]">
@@ -167,7 +183,7 @@ export default function OverviewPage() {
                     </span>
                     Received
                   </span>
-                  <span className="text-data-lg text-on-tertiary-container">
+                  <span className="text-data-lg text-on-surface">
                     {loading ? "..." : `${transactions.filter(t => t.direction === "received").length} txns`}
                   </span>
                 </div>
@@ -243,8 +259,9 @@ export default function OverviewPage() {
                 </div>
               ) : (
                 transactions.map((txn) => (
-                  <div
+                  <Link
                     key={txn.transfer_id}
+                    href={`/explain/${txn.transfer_id}`}
                     className="flex items-center justify-between p-[16px] border-b border-outline-variant last:border-b-0 hover:bg-surface-container-low transition-colors cursor-pointer group"
                   >
                     <div className="flex items-center gap-[16px]">
@@ -258,11 +275,11 @@ export default function OverviewPage() {
                           {txn.counterparty_name}
                         </p>
                         <p className="text-body-sm text-on-surface-variant mt-0.5">
-                          {timeAgo(txn.timestamp)} • Transfer
+                          {timeAgo(txn.timestamp)} · Transfer
                         </p>
                       </div>
                     </div>
-                    <div className="text-right">
+                    <div className="text-right flex flex-col items-end gap-1">
                       <div
                         className={`text-data-md font-medium ${
                           txn.direction === "received"
@@ -274,18 +291,33 @@ export default function OverviewPage() {
                         {formatAmount(txn.amount)}
                       </div>
                       <div
-                        className={`inline-flex items-center px-2 py-0.5 rounded-full mt-1 ${
+                        className={`inline-flex items-center px-2 py-0.5 rounded-full ${
                           txn.direction === "received"
                             ? "bg-on-tertiary-container/10 text-on-tertiary-container"
-                            : "bg-outline/10 text-on-surface-variant"
+                            : "bg-surface-container text-on-surface-variant"
                         }`}
                       >
                         <span className="text-[10px] uppercase tracking-wider font-medium">
                           Settled
                         </span>
                       </div>
+                      {txn.direction === "sent" && (
+                        <span
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            window.location.href = `/disputes/new?transfer_id=${txn.transfer_id}`;
+                          }}
+                          className="text-[10px] uppercase tracking-wider font-medium text-secondary hover:underline inline-flex items-center gap-1 mt-1"
+                        >
+                          <span className="material-symbols-outlined text-[12px]">
+                            gavel
+                          </span>
+                          Dispute
+                        </span>
+                      )}
                     </div>
-                  </div>
+                  </Link>
                 ))
               )}
             </div>
@@ -339,7 +371,7 @@ export default function OverviewPage() {
                 </span>
                 Last verified
               </span>
-              <span className="text-data-md">Just now</span>
+              <span className="text-data-md">on load</span>
             </div>
           </aside>
 

@@ -297,3 +297,172 @@ export async function replayTransfer(
     body: JSON.stringify({ transfer_id: transferId }),
   });
 }
+
+// ─── Money Movement Protection / Dispute Center ────────────────────────────────
+
+export type DisputeStatus =
+  | "filed"
+  | "under_review"
+  | "resolved_for_sender"
+  | "resolved_for_receiver"
+  | "auto_refunded"
+  | "rejected";
+
+export type DisputeRole = "complainant" | "respondent";
+
+export interface DisputeTimelineEntry {
+  at: string;
+  actor: string;
+  event: string;
+  detail: string | null;
+}
+
+export interface DisputeCreateBody {
+  transfer_id: string;
+  complainant_id: string;
+  screenshot_url: string;
+  claimed_amount: string | number;
+  requested_amount: string | number;
+  narrative?: string | null;
+}
+
+export interface DisputeRespondBody {
+  user_id: string;
+  response: string;
+  accept_refund: boolean;
+}
+
+export interface DisputeAdminResolveBody {
+  admin_id: string;
+  resolution: "refund_sender" | "release_receiver";
+  note?: string | null;
+}
+
+export interface DisputeDetail {
+  id: string;
+  transfer_id: string;
+  complainant_id: string;
+  complainant_name: string;
+  respondent_id: string;
+  respondent_name: string;
+  screenshot_url: string;
+  claimed_amount: string;
+  requested_amount: string;
+  amount_delta: string;
+  narrative: string | null;
+  status: DisputeStatus;
+  hold_expires_at: string;
+  days_until_hold_expires: number;
+  receiver_response: string | null;
+  resolution_note: string | null;
+  created_at: string;
+  resolved_at: string | null;
+  timeline: DisputeTimelineEntry[];
+}
+
+export interface DisputeSummary {
+  id: string;
+  transfer_id: string;
+  counterparty_name: string;
+  counterparty_id: string;
+  role: DisputeRole;
+  amount: string;
+  status: DisputeStatus;
+  hold_expires_at: string;
+  days_until_hold_expires: number;
+  created_at: string;
+}
+
+export interface DisputeListResponse {
+  items: DisputeSummary[];
+  total: number;
+  active_holds: number;
+  auto_refunds_pending: number;
+}
+
+export interface NotificationItem {
+  id: string;
+  kind: string;
+  title: string;
+  body: string;
+  dispute_id: string | null;
+  is_read: boolean;
+  created_at: string;
+}
+
+export interface NotificationListResponse {
+  items: NotificationItem[];
+  unread_count: number;
+}
+
+export interface AvailableBalanceResponse {
+  user_id: string;
+  balance: string;
+  held: string;
+  available: string;
+}
+
+export async function fileDispute(
+  body: DisputeCreateBody
+): Promise<DisputeDetail> {
+  return apiFetch<DisputeDetail>("/disputes", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function listDisputes(userId: string): Promise<DisputeListResponse> {
+  return apiFetch<DisputeListResponse>(
+    `/disputes?user_id=${encodeURIComponent(userId)}`
+  );
+}
+
+export async function getDispute(disputeId: string): Promise<DisputeDetail> {
+  return apiFetch<DisputeDetail>(`/disputes/${disputeId}`);
+}
+
+export async function respondToDispute(
+  disputeId: string,
+  body: DisputeRespondBody
+): Promise<DisputeDetail> {
+  return apiFetch<DisputeDetail>(`/disputes/${disputeId}/respond`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function adminResolveDispute(
+  disputeId: string,
+  body: DisputeAdminResolveBody
+): Promise<DisputeDetail> {
+  return apiFetch<DisputeDetail>(`/disputes/${disputeId}/admin-resolve`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function listNotifications(
+  userId: string
+): Promise<NotificationListResponse> {
+  return apiFetch<NotificationListResponse>(
+    `/disputes/notifications?user_id=${encodeURIComponent(userId)}`
+  );
+}
+
+export async function markAllNotificationsRead(
+  userId: string
+): Promise<{ marked_read: number }> {
+  return apiFetch<{ marked_read: number }>(
+    `/disputes/notifications/read-all?user_id=${encodeURIComponent(userId)}`,
+    { method: "POST" }
+  );
+}
+
+export async function getAvailableBalance(
+  userId: string
+): Promise<AvailableBalanceResponse> {
+  return apiFetch<AvailableBalanceResponse>(
+    `/users/${userId}/available-balance`
+  );
+}
+}

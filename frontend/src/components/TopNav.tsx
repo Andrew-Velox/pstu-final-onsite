@@ -1,9 +1,33 @@
 "use client";
 
+import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { useUser } from "@/lib/UserContext";
+import { listNotifications } from "@/lib/api";
 
 export default function TopNav() {
   const { users, activeUser, setActiveUser } = useUser();
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  const refreshUnread = useCallback(async () => {
+    if (!activeUser) {
+      setUnreadCount(0);
+      return;
+    }
+    try {
+      const res = await listNotifications(activeUser.id);
+      setUnreadCount(res.unread_count);
+    } catch (err) {
+      // Silent — notification badge is decorative.
+      console.warn("[TopNav] failed to load notifications:", err);
+    }
+  }, [activeUser]);
+
+  useEffect(() => {
+    refreshUnread();
+    const interval = setInterval(refreshUnread, 30_000);
+    return () => clearInterval(interval);
+  }, [refreshUnread]);
 
   return (
     <nav className="fixed top-0 left-0 w-full z-50 flex justify-between items-center px-4 md:px-[40px] h-16 bg-surface/80 backdrop-blur-md border-b border-outline-variant">
@@ -51,12 +75,19 @@ export default function TopNav() {
         </div>
 
         {/* Notifications */}
-        <button
+        <Link
+          href="/disputes"
           aria-label="Notifications"
-          className="hover:bg-surface-container-low transition-colors p-2 rounded-full text-primary"
+          className="relative hover:bg-surface-container-low transition-colors p-2 rounded-full text-primary inline-flex items-center justify-center"
+          onClick={refreshUnread}
         >
           <span className="material-symbols-outlined">notifications</span>
-        </button>
+          {unreadCount > 0 && (
+            <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-error text-on-error text-[10px] font-bold flex items-center justify-center">
+              {unreadCount > 9 ? "9+" : unreadCount}
+            </span>
+          )}
+        </Link>
 
         {/* Avatar */}
         <div className="w-8 h-8 rounded-full bg-secondary-container flex items-center justify-center text-on-secondary-container text-body-sm font-bold">

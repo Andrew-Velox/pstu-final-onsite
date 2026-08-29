@@ -220,3 +220,130 @@ class ReplayResponse(BaseModel):
     transfer_id: UUID
     note: str
     sender_balance: Decimal | None = None
+
+
+# ─── Dispute (Money Movement Protection) ──────────────────────────────────────
+
+class DisputeCreate(BaseModel):
+    """
+    POST /disputes request body.
+
+    The complainant files a dispute against an existing transfer, with a
+    screenshot URL, the amount they claim they sent, and the amount they
+    intended to send.  The 3-digit tolerance rule is enforced server-side.
+    """
+    transfer_id: UUID
+    complainant_id: UUID
+    screenshot_url: str = Field(..., min_length=1, max_length=1024)
+    claimed_amount: Decimal = Field(..., gt=0)
+    requested_amount: Decimal = Field(..., gt=0)
+    narrative: str | None = Field(None, max_length=2000)
+
+
+class DisputeRespondBody(BaseModel):
+    """POST /disputes/{id}/respond body."""
+    user_id: UUID
+    response: str = Field(..., min_length=1, max_length=2000)
+    accept_refund: bool = Field(
+        False,
+        description="If true, the receiver agrees to refund the complainant.",
+    )
+
+
+class DisputeAdminResolveBody(BaseModel):
+    """POST /disputes/{id}/admin-resolve body."""
+    admin_id: UUID
+    resolution: str = Field(
+        ..., description="'refund_sender' or 'release_receiver'"
+    )
+    note: str | None = Field(None, max_length=2000)
+
+
+class DisputeTimelineEntry(BaseModel):
+    """One item in a dispute's audit trail."""
+    at: datetime
+    actor: str = Field(description="'system' or the user's name")
+    event: str
+    detail: str | None = None
+
+
+class DisputeResponse(BaseModel):
+    """GET /disputes/{id} and list response."""
+    id: UUID
+    transfer_id: UUID
+    complainant_id: UUID
+    complainant_name: str
+    respondent_id: UUID
+    respondent_name: str
+    screenshot_url: str
+    claimed_amount: Decimal
+    requested_amount: Decimal
+    amount_delta: Decimal = Field(
+        description="|claimed - requested|, must be <= 3 for eligibility",
+    )
+    narrative: str | None
+    status: str
+    hold_expires_at: datetime
+    days_until_hold_expires: int
+    receiver_response: str | None
+    resolution_note: str | None
+    created_at: datetime
+    resolved_at: datetime | None
+    timeline: list[DisputeTimelineEntry] = Field(default_factory=list)
+
+    model_config = {"from_attributes": True}
+
+
+class DisputeSummary(BaseModel):
+    """Lighter-weight dispute used by the list endpoint."""
+    id: UUID
+    transfer_id: UUID
+    counterparty_name: str
+    counterparty_id: UUID
+    role: str = Field(description="'complainant' or 'respondent'")
+    amount: Decimal
+    status: str
+    hold_expires_at: datetime
+    days_until_hold_expires: int
+    created_at: datetime
+
+
+class DisputeListResponse(BaseModel):
+    items: list[DisputeSummary]
+    total: int
+    active_holds: int
+    auto_refunds_pending: int
+
+
+# ─── Notification ─────────────────────────────────────────────────────────────
+
+class NotificationItem(BaseModel):
+    id: UUID
+    kind: str
+    title: str
+    body: str
+    dispute_id: UUID | None
+    is_read: bool
+    created_at: datetime
+    model_config = {"from_attributes": True}
+
+
+class NotificationListResponse(BaseModel):
+    items: list[NotificationItem]
+    unread_count: int
+
+
+# ─── Available balance (with hold awareness) ──────────────────────────────────
+
+class AvailableBalanceResponse(BaseModel):
+    """
+    GET /users/{id}/available-balance response.
+
+    ``balance`` is the ledger-derived balance; ``held`` is the sum of
+    active dispute holds against this user; ``available`` is what they
+    can actually spend right now.
+    """
+    user_id: UUID
+    balance: Decimal
+    held: Decimal
+    available: Decimal

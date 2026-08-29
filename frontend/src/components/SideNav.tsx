@@ -8,6 +8,7 @@ const mainLinks = [
   { href: "/send", icon: "send", label: "Send" },
   { href: "/request", icon: "payments", label: "Request" },
   { href: "/transactions", icon: "receipt_long", label: "Transactions" },
+  { href: "/disputes", icon: "gavel", label: "Disputes" },
 ];
 
 const footerLinks = [

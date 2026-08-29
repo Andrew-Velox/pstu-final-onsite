@@ -254,7 +254,7 @@ export default function TransactionsPage() {
                       className={`inline-flex items-center px-2 py-0.5 rounded-full mt-1 ${
                         txn.direction === "received"
                           ? "bg-on-tertiary-container/10 text-on-tertiary-container"
-                          : "bg-outline/10 text-on-surface-variant"
+                          : "bg-surface-container text-on-surface-variant"
                       }`}
                     >
                       <span className="text-[10px] uppercase tracking-wider font-medium">

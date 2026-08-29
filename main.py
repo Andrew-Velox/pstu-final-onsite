@@ -16,6 +16,8 @@ from app.routers.system import router as system_router
 from app.routers.transfers import router as transfers_router
 from app.routers.users import router as users_router
 from app.routers.x402 import router as x402_router
+from app.routers.disputes import router as disputes_router
+from app.routers.disputes import user_router as users_available_router
 from app.services import seed_treasury
 
 logger = logging.getLogger(__name__)
@@ -65,6 +67,8 @@ app.include_router(users_router)
 app.include_router(system_router)
 app.include_router(x402_router)
 app.include_router(recovery_router)
+app.include_router(disputes_router)
+app.include_router(users_available_router)
 
 
 @app.get("/health")

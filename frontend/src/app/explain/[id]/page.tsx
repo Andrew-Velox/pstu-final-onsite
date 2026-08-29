@@ -25,6 +25,7 @@ function formatDateTime(dateStr: string): string {
 }
 
 function truncateHash(hash: string, head = 10, tail = 6): string {
+  if (!hash) return "—";
   if (hash.length <= head + tail + 3) return hash;
   return `${hash.slice(0, head)}…${hash.slice(-tail)}`;
 }
@@ -38,7 +39,12 @@ export default function ExplainPage() {
   const [error, setError] = useState<string | null>(null);
 
   const fetchExplain = useCallback(async () => {
-    if (!transferId) return;
+    if (!transferId) {
+      // No id in the URL: bail out cleanly instead of leaving the spinner stuck.
+      setLoading(false);
+      setError("No transfer id was provided in the URL.");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -114,7 +120,7 @@ export default function ExplainPage() {
         </div>
       </header>
 
-      {/* Headline: sender → receiver */}
+      {/* Headline: sender to receiver */}
       <section className="glass-panel p-[32px] grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] items-center gap-[24px]">
         <PartyCard
           name={data.sender_name}
@@ -160,9 +166,7 @@ export default function ExplainPage() {
           <div
             key={e.id}
             className={`glass-panel p-[24px] border-l-4 ${
-              e.entry_type === "debit"
-                ? "border-l-error"
-                : "border-l-tertiary"
+              e.entry_type === "debit" ? "border-l-error" : "border-l-tertiary"
             }`}
           >
             <div className="flex items-center justify-between mb-[12px]">
@@ -184,13 +188,13 @@ export default function ExplainPage() {
                 label="prev_hash"
                 value={truncateHash(e.prev_hash)}
                 mono
-                full={e.prev_hash}
+                full={e.prev_hash || ""}
               />
               <KV
                 label="entry_hash"
                 value={truncateHash(e.entry_hash)}
                 mono
-                full={e.entry_hash}
+                full={e.entry_hash || ""}
               />
             </div>
           </div>
@@ -206,9 +210,11 @@ export default function ExplainPage() {
           </h2>
         </div>
         <p className="text-body-md text-on-surface-variant mb-[16px]">
-          Each ledger entry carries the SHA-256 of the previous entry plus
-          its own canonical content. Any tampering with a prior row breaks
-          the chain at that point and every subsequent entry.
+          Each ledger entry carries the SHA-256 of the previous entry plus its
+          own canonical content. The arrow from each node points to the entry
+          whose <code className="text-data-md">entry_hash</code> closes the
+          chain link. Any tampering with a prior row breaks the chain at that
+          point and every subsequent entry.
         </p>
         <ChainVisualization
           entries={data.entries.map((e) => ({
@@ -304,7 +310,7 @@ function KV({
         {label}
       </span>
       <span
-        className={`text-body-md text-primary break-all ${mono ? "text-data-md" : ""}`}
+        className={`text-primary break-all ${mono ? "text-data-md" : "text-body-md"}`}
         title={full}
       >
         {value}
@@ -318,17 +324,21 @@ function ChainVisualization({
 }: {
   entries: { id: string; entry_hash: string; prev_hash: string }[];
 }) {
+  const GENESIS_HASH = "0".repeat(64);
   return (
     <div className="flex items-center gap-[8px] overflow-x-auto py-[8px]">
-      <ChainNode label="GENESIS" hash={"0".repeat(64)} />
-      {entries.map((e) => (
+      <ChainNode label="GENESIS" hash={GENESIS_HASH} isGenesis />
+      {entries.map((e, idx) => (
         <div key={e.id} className="flex items-center gap-[8px]">
-          <span className="material-symbols-outlined text-secondary text-[24px]">
+          <span
+            className="material-symbols-outlined text-secondary text-[24px]"
+            title={`prev_hash links to entry_hash #${idx + 1}`}
+          >
             arrow_forward
           </span>
           <ChainNode
             label={e.id.slice(0, 6)}
-            hash={e.entry_hash}
+            hash={e.entry_hash || GENESIS_HASH}
           />
         </div>
       ))}
@@ -336,10 +346,28 @@ function ChainVisualization({
   );
 }
 
-function ChainNode({ label, hash }: { label: string; hash: string }) {
+function ChainNode({
+  label,
+  hash,
+  isGenesis,
+}: {
+  label: string;
+  hash: string;
+  isGenesis?: boolean;
+}) {
   return (
-    <div className="flex flex-col items-center bg-surface-container border border-outline-variant rounded-lg px-[12px] py-[8px] shrink-0">
-      <span className="text-label-md text-secondary uppercase tracking-wider">
+    <div
+      className={`flex flex-col items-center rounded-lg px-[12px] py-[8px] shrink-0 border ${
+        isGenesis
+          ? "bg-tertiary-container/30 border-tertiary-container"
+          : "bg-surface-container border-outline-variant"
+      }`}
+    >
+      <span
+        className={`text-label-md uppercase tracking-wider ${
+          isGenesis ? "text-tertiary" : "text-secondary"
+        }`}
+      >
         {label}
       </span>
       <code className="text-data-md text-primary mt-[4px]" title={hash}>

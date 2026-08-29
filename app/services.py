@@ -705,3 +705,635 @@ def replay_transfer(db: Session, transfer_id: UUID) -> tuple[bool, str, Decimal 
                 f"(id={existing.id}). No change applied."
             ), _compute_balance(db, existing.sender_id)
         return False, str(exc), None
+
+# ─── Money Movement Protection / Disputes ────────────────────────────────────
+#
+# The dispute system lets a sender challenge a transfer they believe was
+# sent in error (wrong number, wrong amount, etc.).  When filed within the
+# 15-day window and the digit-delta is ≤ 3, the receiver's available
+# balance is frozen for 15 days.  Resolution paths:
+#
+#   1. Receiver accepts refund           → clawback entries, refund sender.
+#   2. Receiver responds, dispute settled manually by admin → clawback
+#      or release depending on adjudication.
+#   3. Hold expires with no receiver response → auto-clawback (refund).
+#
+# All ledger mutations go through `execute_transfer` (with a deterministic
+# `idempotency_key = 'dispute-clawback-{dispute_id}'`) so the double-entry
+# invariants, hash chain, and FOR UPDATE locking all behave identically to a
+# normal transfer.  This means the global ledger balance still nets to zero
+# after every dispute resolution, and every action is auditable on the
+# Explainability Engine.
+
+from datetime import datetime, timedelta, timezone
+from typing import Iterable
+
+from sqlalchemy import or_, select
+
+from app.models import (
+    Dispute,
+    DisputeStatus,
+    LedgerEntry,
+    Notification,
+    NotificationKind,
+    Transfer,
+    TransferStatus,
+    User,
+)
+from app.schemas import DisputeTimelineEntry
+
+
+DISPUTE_HOLD_DAYS = 15
+DISPUTE_DIGIT_TOLERANCE = Decimal("3")
+DISPUTE_WINDOW_DAYS = 15  # sender can only file within 15 days of the transfer
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _abs_amount_delta(claimed: Decimal, requested: Decimal) -> Decimal:
+    return abs(Decimal(claimed) - Decimal(requested))
+
+
+def _push_notification(
+    db: Session,
+    *,
+    user_id,
+    kind: NotificationKind,
+    title: str,
+    body: str,
+    dispute_id=None,
+) -> Notification:
+    n = Notification(
+        user_id=user_id,
+        kind=kind,
+        title=title,
+        body=body,
+        dispute_id=dispute_id,
+    )
+    db.add(n)
+    db.flush()
+    return n
+
+
+def _simulate_call(
+    db: Session,
+    *,
+    user_id,
+    dispute_id,
+    title: str,
+    body: str,
+) -> Notification:
+    """
+    Record a simulated outbound voice call.  In a real system this would
+    invoke Twilio; here we just write a notification row of kind
+    `call_outbound` so the UI can show the call in the timeline.
+    """
+    return _push_notification(
+        db,
+        user_id=user_id,
+        kind=NotificationKind.call_outbound,
+        title=title,
+        body=body,
+        dispute_id=dispute_id,
+    )
+
+
+# ─── Available-balance helpers ───────────────────────────────────────────────
+
+def _active_hold_total(db: Session, user_id) -> Decimal:
+    """
+    Sum of claimed_amount across active disputes where `user_id` is the
+    respondent.  Active == status == filed and hold_expires_at in the future.
+    """
+    now = _utcnow()
+    total = (
+        db.query(func.coalesce(func.sum(Dispute.claimed_amount), 0))
+        .filter(
+            Dispute.respondent_id == user_id,
+            Dispute.status == DisputeStatus.filed,
+            Dispute.hold_expires_at > now,
+        )
+        .scalar()
+    )
+    return Decimal(total or 0)
+
+
+def compute_available_balance(db: Session, user_id) -> dict:
+    balance = _compute_balance(db, user_id)
+    held = _active_hold_total(db, user_id)
+    available = balance - held
+    return {"balance": balance, "held": held, "available": available}
+
+
+# ─── Dispute lifecycle ───────────────────────────────────────────────────────
+
+def file_dispute(
+    db: Session,
+    *,
+    transfer_id,
+    complainant_id,
+    screenshot_url: str,
+    claimed_amount: Decimal,
+    requested_amount: Decimal,
+    narrative: str | None,
+) -> Dispute:
+    """
+    File a dispute against a transfer.
+
+    Validates:
+      - complainant must be the original sender.
+      - transfer must be completed and ≤ DISPUTE_WINDOW_DAYS old.
+      - no active dispute already exists for the transfer.
+      - |claimed_amount - requested_amount| ≤ DISPUTE_DIGIT_TOLERANCE.
+      - screenshot_url is well-formed.
+
+    On success:
+      - creates Dispute row with hold_expires_at = now + 15 days.
+      - records notifications for both parties + simulated call to respondent.
+    """
+    transfer: Transfer | None = (
+        db.query(Transfer).filter(Transfer.id == transfer_id).first()
+    )
+    if transfer is None:
+        raise LookupError(f"Transfer {transfer_id} not found")
+    if transfer.status != TransferStatus.completed:
+        raise ValueError(
+            f"Cannot dispute a transfer with status={transfer.status.value!r}"
+        )
+    if transfer.sender_id != complainant_id:
+        raise ValueError("Only the sender of a transfer can file a dispute")
+
+    age = _utcnow() - transfer.created_at
+    if age > timedelta(days=DISPUTE_WINDOW_DAYS):
+        raise ValueError(
+            f"Dispute window expired. Transfers may only be disputed within "
+            f"{DISPUTE_WINDOW_DAYS} days."
+        )
+
+    existing = (
+        db.query(Dispute)
+        .filter(
+            Dispute.transfer_id == transfer_id,
+            Dispute.status.in_(
+                [
+                    DisputeStatus.filed,
+                    DisputeStatus.under_review,
+                ]
+            ),
+        )
+        .first()
+    )
+    if existing is not None:
+        raise ValueError(
+            f"An active dispute already exists for this transfer "
+            f"(dispute_id={existing.id})."
+        )
+
+    delta = _abs_amount_delta(claimed_amount, requested_amount)
+    if delta > DISPUTE_DIGIT_TOLERANCE:
+        raise ValueError(
+            f"Amount mismatch too large: |claimed - requested| = {delta} "
+            f"(tolerance is {DISPUTE_DIGIT_TOLERANCE})."
+        )
+
+    if not (screenshot_url.startswith("http://")
+            or screenshot_url.startswith("https://")
+            or screenshot_url.startswith("data:image/")):
+        raise ValueError("screenshot_url must be an http(s) URL or a data: URI")
+
+    dispute = Dispute(
+        transfer_id=transfer_id,
+        complainant_id=complainant_id,
+        respondent_id=transfer.receiver_id,
+        screenshot_url=screenshot_url,
+        claimed_amount=Decimal(claimed_amount),
+        requested_amount=Decimal(requested_amount),
+        narrative=narrative,
+        status=DisputeStatus.filed,
+        hold_expires_at=_utcnow() + timedelta(days=DISPUTE_HOLD_DAYS),
+    )
+    db.add(dispute)
+    db.flush()
+
+    _push_notification(
+        db,
+        user_id=complainant_id,
+        kind=NotificationKind.dispute_filed,
+        title="Dispute filed",
+        body=(
+            f"Your dispute for transfer {transfer_id} is under review. "
+            f"Funds are on hold until {dispute.hold_expires_at.isoformat()}."
+        ),
+        dispute_id=dispute.id,
+    )
+    _push_notification(
+        db,
+        user_id=transfer.receiver_id,
+        kind=NotificationKind.dispute_filed,
+        title="A payment you received is under dispute",
+        body=(
+            f"{transfer.sender_id} has disputed a transfer. "
+            f"Please respond within 15 days to avoid auto-refund."
+        ),
+        dispute_id=dispute.id,
+    )
+    _simulate_call(
+        db,
+        user_id=transfer.receiver_id,
+        dispute_id=dispute.id,
+        title="Outbound call placed",
+        body=(
+            f"Automated voice call attempted to respondent. "
+            f"Message: 'You have a pending dispute. Please log in to respond.'"
+        ),
+    )
+
+    db.commit()
+    db.refresh(dispute)
+    return dispute
+
+
+def receiver_respond(
+    db: Session,
+    *,
+    dispute_id,
+    user_id,
+    response_text: str,
+    accept_refund: bool,
+) -> Dispute:
+    """
+    Receiver responds to a dispute.  Sets status to `under_review` and
+    records the response.  If `accept_refund` is true, immediately runs
+    the clawback and marks the dispute `resolved_for_sender`.
+    """
+    dispute: Dispute | None = (
+        db.query(Dispute).filter(Dispute.id == dispute_id).first()
+    )
+    if dispute is None:
+        raise LookupError(f"Dispute {dispute_id} not found")
+    if dispute.respondent_id != user_id:
+        raise ValueError("Only the respondent can submit a response")
+    if dispute.status != DisputeStatus.filed:
+        raise ValueError(
+            f"Dispute is in status={dispute.status.value!r}; cannot respond."
+        )
+
+    dispute.receiver_response = response_text
+    dispute.status = DisputeStatus.under_review
+
+    _push_notification(
+        db,
+        user_id=dispute.complainant_id,
+        kind=NotificationKind.dispute_responded,
+        title="Receiver responded",
+        body=f"The receiver responded: {response_text[:200]}",
+        dispute_id=dispute.id,
+    )
+
+    if accept_refund:
+        _clawback(db, dispute, note="Receiver accepted refund.")
+        dispute.status = DisputeStatus.resolved_for_sender
+        dispute.resolved_at = _utcnow()
+        _push_notification(
+            db,
+            user_id=dispute.complainant_id,
+            kind=NotificationKind.dispute_resolved,
+            title="Dispute resolved in your favour",
+            body=f"You have been refunded {dispute.claimed_amount}.",
+            dispute_id=dispute.id,
+        )
+        _push_notification(
+            db,
+            user_id=dispute.respondent_id,
+            kind=NotificationKind.dispute_resolved,
+            title="Refund processed",
+            body=(
+                f"You agreed to refund {dispute.claimed_amount} to the sender."
+            ),
+            dispute_id=dispute.id,
+        )
+
+    db.commit()
+    db.refresh(dispute)
+    return dispute
+
+
+def admin_resolve(
+    db: Session,
+    *,
+    dispute_id,
+    admin_id,
+    resolution: str,
+    note: str | None,
+) -> Dispute:
+    """
+    Admin force-resolves a dispute.
+
+    `resolution`:
+      - 'refund_sender'    → clawback + resolved_for_sender
+      - 'release_receiver' → mark resolved_for_receiver, hold released
+    """
+    dispute: Dispute | None = (
+        db.query(Dispute).filter(Dispute.id == dispute_id).first()
+    )
+    if dispute is None:
+        raise LookupError(f"Dispute {dispute_id} not found")
+    if dispute.status not in (DisputeStatus.filed, DisputeStatus.under_review):
+        raise ValueError(
+            f"Dispute is already {dispute.status.value!r}; cannot re-resolve."
+        )
+
+    if resolution == "refund_sender":
+        _clawback(db, dispute, note=note or "Admin resolved for sender.")
+        dispute.status = DisputeStatus.resolved_for_sender
+    elif resolution == "release_receiver":
+        dispute.status = DisputeStatus.resolved_for_receiver
+    else:
+        raise ValueError(
+            f"Unknown resolution {resolution!r}; expected refund_sender|release_receiver"
+        )
+
+    dispute.resolved_at = _utcnow()
+    dispute.resolution_note = note
+
+    for uid in (dispute.complainant_id, dispute.respondent_id):
+        _push_notification(
+            db,
+            user_id=uid,
+            kind=NotificationKind.dispute_resolved,
+            title="Dispute resolved by admin",
+            body=note or f"Admin set resolution={resolution!r}.",
+            dispute_id=dispute.id,
+        )
+
+    db.commit()
+    db.refresh(dispute)
+    return dispute
+
+
+def auto_refund_expired(db: Session) -> int:
+    """
+    Sweep every dispute whose hold has expired without a resolution and
+    auto-clawback the funds.  Returns the number of disputes refunded.
+
+    Safe to call repeatedly; only `filed` disputes whose hold has
+    elapsed are touched.
+    """
+    now = _utcnow()
+    expired = (
+        db.query(Dispute)
+        .filter(
+            Dispute.status == DisputeStatus.filed,
+            Dispute.hold_expires_at <= now,
+        )
+        .all()
+    )
+    for d in expired:
+        _clawback(db, d, note="Auto-refund: 15-day hold expired.")
+        d.status = DisputeStatus.auto_refunded
+        d.resolved_at = now
+        d.resolution_note = (
+            "Receiver did not respond within the 15-day hold window. "
+            "Funds were automatically refunded to the complainant."
+        )
+        _push_notification(
+            db,
+            user_id=d.complainant_id,
+            kind=NotificationKind.dispute_expired,
+            title="Auto-refund processed",
+            body=(
+                f"The receiver did not respond in time. "
+                f"{d.claimed_amount} has been refunded to you."
+            ),
+            dispute_id=d.id,
+        )
+        _push_notification(
+            db,
+            user_id=d.respondent_id,
+            kind=NotificationKind.dispute_expired,
+            title="Hold expired",
+            body=(
+                f"The 15-day hold expired without a response. "
+                f"{d.claimed_amount} was refunded to the complainant."
+            ),
+            dispute_id=d.id,
+        )
+    if expired:
+        db.commit()
+    return len(expired)
+
+
+def _clawback(db: Session, dispute: Dispute, *, note: str) -> None:
+    """
+    Refund the complainant by reversing the original transfer.
+
+    Implementation: re-use `execute_transfer` with a deterministic
+    idempotency key `'dispute-clawback-{dispute.id}'` so a repeat
+    resolution attempt is a no-op.  This produces two new ledger
+    entries (debit respondent, credit complainant) which are appended
+    to the hash chain and keep the double-entry invariant intact.
+
+    If the respondent no longer has sufficient funds (e.g. they spent
+    the disputed money), we fall back to the system treasury, which is
+    allowed to go negative.
+    """
+    transfer: Transfer | None = (
+        db.query(Transfer).filter(Transfer.id == dispute.transfer_id).first()
+    )
+    if transfer is None:
+        raise LookupError(f"Transfer {dispute.transfer_id} not found")
+
+    refund_amount = Decimal(dispute.claimed_amount)
+    idempotency_key = f"dispute-clawback-{dispute.id}"
+
+    # Try the real refund first.  If it fails for insufficient funds we
+    # backstop with a treasury debit (so the complainant is never
+    # stranded).
+    try:
+        execute_transfer(
+            db=db,
+            sender_id=transfer.receiver_id,
+            receiver_id=transfer.sender_id,
+            amount=refund_amount,
+            idempotency_key=idempotency_key,
+        )
+    except ValueError as exc:
+        db.rollback()
+        execute_transfer(
+            db=db,
+            sender_id=TREASURY_ID,
+            receiver_id=transfer.sender_id,
+            amount=refund_amount,
+            idempotency_key=f"{idempotency_key}-treasury-backstop",
+        )
+
+
+# ─── Read helpers ────────────────────────────────────────────────────────────
+
+def list_disputes(db: Session, user_id) -> dict:
+    """Return disputes where user is either complainant or respondent."""
+    rows: list[Dispute] = (
+        db.query(Dispute)
+        .filter(or_(Dispute.complainant_id == user_id,
+                    Dispute.respondent_id == user_id))
+        .order_by(Dispute.created_at.desc())
+        .all()
+    )
+    user_cache: dict = {}
+    def _name(uid) -> str:
+        if uid not in user_cache:
+            u = db.query(User).filter(User.id == uid).first()
+            user_cache[uid] = u.name if u else str(uid)
+        return user_cache[uid]
+
+    items = []
+    for d in rows:
+        if d.complainant_id == user_id:
+            cp_id = d.respondent_id
+            role = "complainant"
+        else:
+            cp_id = d.complainant_id
+            role = "respondent"
+        days_left = max(
+            0,
+            (d.hold_expires_at - _utcnow()).days,
+        )
+        items.append({
+            "id": d.id,
+            "transfer_id": d.transfer_id,
+            "counterparty_id": cp_id,
+            "counterparty_name": _name(cp_id),
+            "role": role,
+            "amount": d.claimed_amount,
+            "status": d.status.value,
+            "hold_expires_at": d.hold_expires_at,
+            "days_until_hold_expires": days_left,
+            "created_at": d.created_at,
+        })
+
+    active = sum(1 for d in rows if d.status == DisputeStatus.filed)
+    auto_pending = sum(
+        1 for d in rows
+        if d.status == DisputeStatus.filed and d.hold_expires_at <= _utcnow()
+    )
+    return {
+        "items": items,
+        "total": len(items),
+        "active_holds": active,
+        "auto_refunds_pending": auto_pending,
+    }
+
+
+def dispute_detail(db: Session, dispute_id, *, viewer_id=None) -> dict:
+    dispute: Dispute | None = (
+        db.query(Dispute).filter(Dispute.id == dispute_id).first()
+    )
+    if dispute is None:
+        raise LookupError(f"Dispute {dispute_id} not found")
+
+    complainant = db.query(User).filter(User.id == dispute.complainant_id).first()
+    respondent = db.query(User).filter(User.id == dispute.respondent_id).first()
+
+    timeline = _build_timeline(db, dispute)
+    days_left = max(
+        0,
+        (dispute.hold_expires_at - _utcnow()).days,
+    )
+    return {
+        "id": dispute.id,
+        "transfer_id": dispute.transfer_id,
+        "complainant_id": dispute.complainant_id,
+        "complainant_name": complainant.name if complainant else str(dispute.complainant_id),
+        "respondent_id": dispute.respondent_id,
+        "respondent_name": respondent.name if respondent else str(dispute.respondent_id),
+        "screenshot_url": dispute.screenshot_url,
+        "claimed_amount": dispute.claimed_amount,
+        "requested_amount": dispute.requested_amount,
+        "amount_delta": _abs_amount_delta(dispute.claimed_amount, dispute.requested_amount),
+        "narrative": dispute.narrative,
+        "status": dispute.status.value,
+        "hold_expires_at": dispute.hold_expires_at,
+        "days_until_hold_expires": days_left,
+        "receiver_response": dispute.receiver_response,
+        "resolution_note": dispute.resolution_note,
+        "created_at": dispute.created_at,
+        "resolved_at": dispute.resolved_at,
+        "timeline": timeline,
+    }
+
+
+def _build_timeline(db: Session, dispute: Dispute) -> list[dict]:
+    events: list[tuple[datetime, str, str, str | None]] = []
+    events.append((
+        dispute.created_at,
+        dispute.complainant.name if dispute.complainant else str(dispute.complainant_id),
+        "filed",
+        f"Dispute opened; claimed {dispute.claimed_amount}, requested {dispute.requested_amount}.",
+    ))
+    notifs = (
+        db.query(Notification)
+        .filter(Notification.dispute_id == dispute.id)
+        .order_by(Notification.created_at.asc(), Notification.id.asc())
+        .all()
+    )
+    for n in notifs:
+        actor = "system"
+        try:
+            u = db.query(User).filter(User.id == n.user_id).first()
+            if u:
+                actor = u.name
+        except Exception:
+            pass
+        event_map = {
+            NotificationKind.dispute_filed: "notification_sent",
+            NotificationKind.dispute_responded: "receiver_responded",
+            NotificationKind.dispute_resolved: "resolved",
+            NotificationKind.dispute_expired: "auto_refunded",
+            NotificationKind.call_outbound: "outbound_call",
+        }
+        events.append((n.created_at, actor, event_map.get(n.kind, n.kind.value), n.title))
+
+    if dispute.resolved_at:
+        events.append((
+            dispute.resolved_at,
+            "system",
+            dispute.status.value,
+            dispute.resolution_note,
+        ))
+
+    events.sort(key=lambda e: e[0])
+    return [
+        {"at": at, "actor": actor, "event": ev, "detail": det}
+        for (at, actor, ev, det) in events
+    ]
+
+
+def list_notifications(db: Session, user_id, *, limit: int = 50) -> dict:
+    rows: list[Notification] = (
+        db.query(Notification)
+        .filter(Notification.user_id == user_id)
+        .order_by(Notification.created_at.desc(), Notification.id.desc())
+        .limit(limit)
+        .all()
+    )
+    unread = (
+        db.query(func.count(Notification.id))
+        .filter(Notification.user_id == user_id, Notification.is_read == False)  # noqa: E712
+        .scalar()
+    )
+    return {
+        "items": rows,
+        "unread_count": int(unread or 0),
+    }
+
+
+def mark_notifications_read(db: Session, user_id) -> int:
+    n = (
+        db.query(Notification)
+        .filter(Notification.user_id == user_id, Notification.is_read == False)  # noqa: E712
+        .update({"is_read": True})
+    )
+    db.commit()
+    return int(n)
