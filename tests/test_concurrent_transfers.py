@@ -196,7 +196,7 @@ class TestConcurrentTransfers:
         )
 
         print(
-            f"\n✓ {len(results)} succeeded, {len(errors)} rejected. "
+            f"\n[PASS] {len(results)} succeeded, {len(errors)} rejected. "
             f"Alice={alice_balance}, Bob={bob_balance}, Total={total}"
         )
 
@@ -261,7 +261,7 @@ class TestConcurrentTransfers:
         assert alice_balance + bob_balance == Decimal("150.00")
 
         print(
-            f"\n✓ A→B: {statuses['a_to_b']}, B→A: {statuses['b_to_a']}. "
+            f"\n[PASS] A->B: {statuses['a_to_b']}, B->A: {statuses['b_to_a']}. "
             f"Alice={alice_balance}, Bob={bob_balance}"
         )
 
@@ -302,7 +302,7 @@ class TestConcurrentTransfers:
             f"Double-spend detected! Alice balance={alice_balance}"
         )
 
-        print(f"\n✓ Idempotent retry returned same transfer {data1['id']}")
+        print(f"\n[PASS] Idempotent retry returned same transfer {data1['id']}")
 
     def test_insufficient_funds_no_partial_write(self, client, alice_and_bob):
         """
@@ -325,7 +325,7 @@ class TestConcurrentTransfers:
         alice_balance = _get_balance(alice_id)
         assert alice_balance == Decimal("100.00")
 
-        print(f"\n✓ Insufficient funds correctly rejected. Alice={alice_balance}")
+        print(f"\n[PASS] Insufficient funds correctly rejected. Alice={alice_balance}")
 
 
 # ─── Standalone runner ────────────────────────────────────────────────────────
