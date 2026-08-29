@@ -35,3 +35,29 @@ class TransferResponse(BaseModel):
     )
 
     model_config = {"from_attributes": True}
+
+
+# ─── Money Request ────────────────────────────────────────────────────────────
+
+class MoneyRequestCreate(BaseModel):
+    """POST /requests request body."""
+    requester_id: UUID
+    target_id: UUID
+    amount: Decimal = Field(..., gt=0, description="Must be > 0")
+
+
+class MoneyRequestResponse(BaseModel):
+    """Response body for money-request endpoints."""
+    id: UUID
+    requester_id: UUID
+    target_id: UUID
+    amount: Decimal
+    status: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ApproveDeclineBody(BaseModel):
+    """Body for approve/decline actions — simulates auth via user_id."""
+    user_id: UUID
