@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from app import models  # noqa: F401
 from app.routers.transfers import router as transfers_router
 from app.routers.requests import router as requests_router
+from app.routers.users import router as users_router
 
 app = FastAPI(
     title="Money Movement API",
@@ -16,6 +17,7 @@ app = FastAPI(
 
 app.include_router(transfers_router)
 app.include_router(requests_router)
+app.include_router(users_router)
 
 
 @app.get("/health")

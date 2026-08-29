@@ -61,3 +61,36 @@ class MoneyRequestResponse(BaseModel):
 class ApproveDeclineBody(BaseModel):
     """Body for approve/decline actions — simulates auth via user_id."""
     user_id: UUID
+
+
+# ─── Transaction History ──────────────────────────────────────────────────────
+
+class TransactionItem(BaseModel):
+    """
+    A single entry in a user's transaction history.
+
+    Shaped for easy frontend rendering — flat, with the counterparty name
+    resolved server-side so the frontend doesn't need to look it up.
+    """
+    transfer_id: UUID
+    direction: str = Field(
+        description="'sent' (debit) or 'received' (credit)",
+    )
+    amount: Decimal
+    counterparty_id: UUID
+    counterparty_name: str
+    timestamp: datetime
+
+
+class TransactionListResponse(BaseModel):
+    """Paginated transaction history."""
+    items: list[TransactionItem]
+    total: int
+    limit: int
+    offset: int
+
+
+class BalanceResponse(BaseModel):
+    """GET /users/{user_id}/balance response."""
+    user_id: UUID
+    balance: Decimal

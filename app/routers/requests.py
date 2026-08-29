@@ -182,18 +182,29 @@ def decline_money_request(
 @router.get("", response_model=list[MoneyRequestResponse])
 def list_money_requests(
     user_id: UUID = Query(..., description="Filter by user (as requester or target)"),
+    status: str | None = Query(
+        "pending",
+        description="Filter by status: 'pending', 'approved', 'declined', or null/empty for all",
+    ),
     db: Session = Depends(get_db),
 ):
     """
-    List **pending** money requests where the user is either the
-    requester or the target.
+    List money requests where the user is either the requester or the
+    target.  Filterable by status (defaults to ``pending``).
     """
-    requests = (
+    query = (
         db.query(MoneyRequest)
         .filter(
-            MoneyRequest.status == MoneyRequestStatus.pending,
             (MoneyRequest.requester_id == user_id) | (MoneyRequest.target_id == user_id),
         )
+    )
+
+    # Apply status filter (default: pending)
+    if status and status in ("pending", "approved", "declined"):
+        query = query.filter(MoneyRequest.status == MoneyRequestStatus(status))
+
+    requests = (
+        query
         .order_by(MoneyRequest.created_at.desc())
         .all()
     )
@@ -209,3 +220,4 @@ def list_money_requests(
         )
         for r in requests
     ]
+
